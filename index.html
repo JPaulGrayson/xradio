@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Tailscale Funnel strips /xradio before the server sees it, so links can't rely on the typed address. -->
+<base href="/xradio/">
+<title>XRadio</title>
+<style>
+:root {
+  --bg: #0b0f14;
+  --panel: rgba(11, 15, 20, 0.82);
+  --text: #eef2f6;
+  --muted: #9aa7b4;
+  --accent: #3b82f6;
+  --line: #26313d;
+  --confirmed: #34d399;
+  --disputed: #f87171;
+  --divided: #fbbf24;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 20px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+#app { position: fixed; inset: 0; display: grid; grid-template-rows: 1fr auto; }
+
+/* The picture area: a blurred copy fills the space, the photo itself is never cropped. */
+#stage { position: relative; overflow: hidden; background: #000; }
+.layer { position: absolute; inset: 0; opacity: 0; transition: opacity 1.2s ease; }
+.layer.on { opacity: 1; }
+.layer .blur { position: absolute; inset: -40px; background-size: cover; background-position: center;
+  filter: blur(36px) brightness(0.45); }
+.layer img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+
+/* A story with no pictures gets a headline card instead. */
+#card { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center;
+  padding: 6vh 7vw; background: radial-gradient(circle at 30% 30%, #17324f, #0b0f14 70%);
+  opacity: 0; transition: opacity 1.2s ease; }
+#card.on { opacity: 1; }
+#card .seg { color: var(--accent); text-transform: uppercase; letter-spacing: .12em; font-size: 22px; font-weight: 700; }
+#card .head { font-size: clamp(34px, 5vw, 64px); font-weight: 700; line-height: 1.15; margin-top: 14px; }
+
+#top { position: absolute; top: 0; left: 0; right: 0; padding: 14px 22px; display: flex; gap: 16px;
+  align-items: center; background: linear-gradient(var(--panel), transparent); font-size: 18px; color: var(--muted); }
+#top b { color: var(--text); letter-spacing: .03em; }
+
+#caption { position: absolute; left: 0; right: 0; bottom: 0; padding: 60px 26px 18px;
+  background: linear-gradient(transparent, var(--panel) 45%); }
+#caption .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+#caption .seg { color: var(--accent); text-transform: uppercase; letter-spacing: .1em; font-size: 17px; font-weight: 700; }
+.tag { font-size: 15px; padding: 3px 10px; border-radius: 99px; border: 1px solid currentColor; }
+.tag.confirmed { color: var(--confirmed); } .tag.disputed { color: var(--disputed); } .tag.divided, .tag.single { color: var(--divided); }
+#caption .head { font-size: clamp(24px, 2.6vw, 38px); font-weight: 700; line-height: 1.2; margin-top: 6px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+#caption .credit { color: var(--muted); font-size: 16px; margin-top: 6px; min-height: 1.3em; }
+
+/* Controls: big targets for the car screen. */
+#bar { display: grid; grid-template-columns: auto auto auto 1fr auto auto; gap: 10px; align-items: center;
+  padding: 8px 14px; background: #0f151c; border-top: 1px solid var(--line); }
+.btn { width: 60px; height: 60px; border-radius: 16px; background: #18212b; display: grid; place-items: center; }
+.btn:active { background: #223041; }
+.btn svg { width: 30px; height: 30px; fill: currentColor; }
+#play { width: 70px; height: 70px; border-radius: 50%; background: var(--accent); }
+#play svg { width: 36px; height: 36px; }
+#progress { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+#track { position: relative; height: 34px; cursor: pointer; }
+#track .rail { position: absolute; left: 0; right: 0; top: 13px; height: 8px; border-radius: 4px; background: #26313d; }
+#track .fill { position: absolute; left: 0; top: 13px; height: 8px; border-radius: 4px; background: var(--accent); width: 0; }
+#track .tick { position: absolute; top: 9px; width: 2px; height: 16px; background: #4b5a69; }
+#times { display: flex; justify-content: space-between; color: var(--muted); font-size: 17px; font-variant-numeric: tabular-nums; }
+#times .now { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 12px; }
+.textBtn { height: 60px; padding: 0 18px; border-radius: 16px; background: #18212b; font-weight: 600; }
+.textBtn:active { background: #223041; }
+/* Narrower car or tablet browsers (the Tesla browser when not full screen): progress bar on its own row,
+   so the buttons never squeeze it out of sight. */
+@media (max-width: 1100px) {
+  #bar { grid-template-columns: auto auto auto 1fr auto; gap: 10px; padding: 8px 12px 10px; }
+  #progress { grid-column: 1 / -1; grid-row: 1; }
+  .textBtn { padding: 0 10px; min-width: 0; }
+}
+/* Phones (the public page): smaller controls, with the progress bar on its own row above them. */
+@media (max-width: 760px) {
+  #bar { grid-template-columns: auto auto auto 1fr; gap: 8px; padding: 8px 10px 12px; }
+  #progress { grid-column: 1 / -1; grid-row: 1; }
+  .btn { width: 56px; height: 56px; border-radius: 14px; }
+  .btn svg { width: 28px; height: 28px; }
+  #play { width: 64px; height: 64px; }
+  #play svg { width: 34px; height: 34px; }
+  .textBtn { height: 56px; padding: 0 4px; font-size: 17px; min-width: 0; }
+  #fullBtn { display: none; }  /* no room, and iPhones can't go full screen anyway */
+  #caption { padding: 40px 16px 12px; }
+  #top { padding: 10px 14px; font-size: 15px; }
+}
+@media (max-width: 350px) {  /* the smallest phones */
+  .btn { width: 46px; height: 46px; }
+  #play { width: 54px; height: 54px; }
+  .textBtn { height: 46px; font-size: 15px; }
+}
+
+/* Shows menu: a compact box above the Shows button. X and YouTube side by side, each a list of every show
+   that shows five at a time and scrolls for the rest. Tap a show to open its stories under it. */
+.drawer { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: none; }
+.drawer.open { display: block; }
+.drawer .panel { position: absolute; right: 14px; bottom: 90px; width: min(980px, 96vw); background: #0f151c;
+  border: 1px solid var(--line); border-radius: 16px; padding: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.6); }
+.drawer h2, .close, #stories { display: none !important; }
+#list { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+#list h3 { margin: 0 4px 6px; font-size: 16px; color: var(--accent); text-transform: uppercase; letter-spacing: .08em; }
+.scroll { height: calc(5 * 50px + 4px); overflow-y: auto; border: 1px solid var(--line); border-radius: 12px;
+  background: #121a23; overscroll-behavior: contain; }
+.row { display: flex; align-items: center; gap: 10px; width: 100%; height: 50px; padding: 0 14px; text-align: left;
+  border-bottom: 1px solid #1b2530; }
+.row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; font-weight: 600; }
+.row .d { color: var(--muted); font-size: 15px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.row .v { color: var(--muted); font-size: 14px; width: 14px; }
+.row.current .t { color: var(--accent); }
+.row.open { background: #17202b; }
+.row.story { height: 44px; padding-left: 34px; background: #0f151c; }
+.row.story .t { font-size: 16px; font-weight: 500; }
+.row.story.playing .t { color: var(--accent); font-weight: 650; }
+.links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; }
+a.show { color: var(--muted); text-decoration: none; font-size: 15px; display: flex; gap: 8px; align-items: baseline; }
+a.show .t { color: var(--text); font-weight: 600; }
+@media (max-width: 760px) {
+  #list { grid-template-columns: minmax(0, 1fr); }
+  .drawer .panel { right: 2vw; bottom: 80px; padding: 10px; }
+  .scroll { height: calc(4 * 50px + 4px); }
+}
+
+#message { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  text-align: center; padding: 8vw; font-size: 26px; color: var(--muted); }
+#message.on { display: flex; }
+</style>
+</head>
+<body data-lists="shows.json ../xradio-yt/shows.json">
+<div id="app">
+  <div id="stage">
+    <div class="layer" id="layerA"><div class="blur"></div><img alt=""></div>
+    <div class="layer" id="layerB"><div class="blur"></div><img alt=""></div>
+    <div id="card"><div class="seg"></div><div class="head"></div></div>
+    <div id="top"><b>XRadio</b><span id="showTitle"></span></div>
+    <div id="caption">
+      <div class="row"><span class="seg" id="seg"></span><span class="tag" id="tag" hidden></span></div>
+      <div class="head" id="head"></div>
+      <div class="credit" id="credit"></div>
+    </div>
+    <div id="message"></div>
+  </div>
+  <div id="bar">
+    <button class="btn" id="prev" aria-label="Previous story"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9.5 12z"/></svg></button>
+    <button class="btn" id="play" aria-label="Play"><svg viewBox="0 0 24 24"><path id="playIcon" d="M8 5v14l11-7z"/></svg></button>
+    <button class="btn" id="next" aria-label="Next story"><svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l10.5-7z"/></svg></button>
+    <div id="progress">
+      <div id="track"><div class="rail"></div><div class="fill" id="fill"></div></div>
+      <div id="times"><span class="now" id="storyLabel"></span><span id="clock">0:00 / 0:00</span></div>
+    </div>
+    <button class="textBtn" id="showsBtn">Shows</button>
+    <button class="btn" id="fullBtn" aria-label="Full screen"><svg viewBox="0 0 24 24"><path id="fullIcon" d="M4 4h6v2H6v4H4zM14 4h6v6h-2V6h-4zM4 14h2v4h4v2H4zM18 14h2v6h-6v-2h4z"/></svg></button>
+  </div>
+</div>
+<div class="drawer" id="stories"><div class="panel"><button class="close" aria-label="Close">✕</button><h2>In this show</h2><div id="storyList"></div></div></div>
+<div class="drawer" id="drawer"><div class="panel"><button class="close" aria-label="Close">✕</button><h2>Shows</h2><div id="list"></div>
+  <div class="links">
+  <a class="show" id="readAlong" href="https://jpaulgrayson.github.io/partyline"><div class="t">Read along</div><div class="d">This show's stories, fact checks and original posts</div></a>
+  <a class="show" href="https://docs.google.com/forms/d/e/1FAIpQLSd5HGBNvOHvHGdtysizhQldT6vl61pdbcIP3ju93bJpwewSTw/viewform"><div class="t">Send feedback</div><div class="d">Tell us what worked and what broke</div></a>
+  <a class="show" href="https://jpaulgrayson.github.io/"><div class="t">More from JPG Apps</div><div class="d">Quack, Turai and more</div></a>
+  </div>
+</div></div>
+<audio id="audio" preload="metadata"></audio>
+
+<script>
+"use strict";
+const MIN_SLIDE = 8;          // seconds each photo stays up, at least
+const TAGLINE = "Your news, read aloud";
+const $ = id => document.getElementById(id);
+const audio = $("audio");
+let shows = [], current = -1, story = null, slideKey = "", front = $("layerA"), back = $("layerB");
+const broken = new Set(), preloaded = new Set();  // photos that failed to load; photos already fetched
+const slideId = sl => sl.src || sl.url;  // the public page's slides have only a url
+
+function store(key, value) {  // remembered positions are a convenience; the page works without them
+  try { value === undefined ? localStorage.removeItem(key) : localStorage.setItem(key, value); } catch (e) {}
+}
+function recall(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+
+function clock(s) {
+  s = Math.max(0, Math.floor(s || 0));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+function message(text) { $("message").textContent = text; $("message").classList.toggle("on", !!text); }
+
+// The private page asks the Spark; the public copy (carpage.py) reads published lists, the first one
+// required and the rest (the YouTube show) optional.
+const LISTS = (document.body.dataset.lists || "api/shows").split(" ");
+
+// The list of shows. Phones and the car keep this page in memory for days, so the list is fetched again
+// whenever the page comes back into view (and every 10 minutes while it stays open).
+let loadedAt = 0;
+async function fetchShows() {
+  const res = await fetch(LISTS[0], { cache: "no-store" });
+  if (res.status === 401) { location.reload(); return null; }
+  let list = await res.json();
+  for (const url of LISTS.slice(1)) {
+    try { list = list.concat(await (await fetch(url, { cache: "no-store" })).json()); } catch (e) {}
+  }
+  if (LISTS.length > 1) list.sort((a, b) => a.edition < b.edition ? 1 : a.edition > b.edition ? -1 : 0);
+  loadedAt = Date.now();
+  return list;
+}
+
+// Open on the newest show, with the Shows list showing in date order (tapping play or outside closes it).
+function openNewest() {
+  const want = new URLSearchParams(location.search).get("show");
+  choose(Math.max(0, want ? shows.findIndex(s => s.ranking === want) : 0), false);
+  openMenu("drawer");
+}
+
+async function load() {
+  try { shows = await fetchShows(); }
+  catch (e) { return message("Can't reach XRadio right now. Check the car's connection, then reload."); }
+  if (!shows) return;
+  if (!shows.length) return message("No slideshow shows yet. The next show (7 AM or 4 PM) will have one.");
+  message("");
+  openNewest();
+}
+
+// Back on the page after a while: get the new list. Mid-listen, keep playing and only update the list;
+// otherwise start again at the newest show.
+async function refresh() {
+  if (document.hidden || Date.now() - loadedAt < 5 * 60e3) return;
+  let list;
+  try { list = await fetchShows(); } catch (e) { return; }
+  if (!list || !list.length) return;
+  const playing = current >= 0 && !audio.paused, id = current >= 0 ? shows[current].id : null;
+  shows = list;
+  if (playing && shows.some(s => s.id === id)) { current = shows.findIndex(s => s.id === id); renderList(); return; }
+  if (!shows.length) return;
+  openNewest();
+}
+document.addEventListener("visibilitychange", refresh);
+window.addEventListener("pageshow", e => { if (e.persisted) { loadedAt = 0; refresh(); } });
+setInterval(refresh, 10 * 60e3);
+
+function showName(title) {  // "Part 1: Top Stories, Monday, November 2, 2026, 7:00 AM" -> [Top Stories, Monday, November 2, 7:00 AM]
+  const m = title.replace(/^Part \d+: /, "").replace(/, \d{4}/, "").match(/^(.+?)(?:, |: )((?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day.*)$/);
+  return m ? [m[1], m[2]] : [title, ""];
+}
+
+
+function shortWhen(when, withDate) {  // "Tuesday, November 10, 7:19 AM" -> "Tue 7:19 AM" (or "Tue Nov 10 7:19 AM")
+  const m = when.match(/^(\w{3})\w*day, (\w{3})\w* (\d+)(?:, (.+))?$/);
+  return m ? m[1] + (withDate ? " " + m[2] + " " + m[3] : "") + (m[4] ? " " + m[4] : "") : when;
+}
+
+// Two columns, X and YouTube: every show, five visible at a time. A show opens to its stories.
+let opened = -1;  // the show whose stories are showing in the menu
+
+async function full(i) {  // older shows arrive as a name only; their stories come from the Spark when needed
+  if (shows[i].brief) shows[i] = await (await fetch("api/show?id=" + encodeURIComponent(shows[i].id), { cache: "no-store" })).json();
+  return shows[i];
+}
+
+function row(cls, title, detail, onclick) {
+  const b = document.createElement("button");
+  b.className = "row " + cls;
+  b.innerHTML = '<span class="t"></span><span class="d"></span>';
+  b.querySelector(".t").textContent = title;
+  b.querySelector(".d").textContent = detail;
+  b.onclick = onclick;
+  return b;
+}
+
+function play(i, at) {
+  closeMenus();
+  if (i === current) { audio.currentTime = at + (at ? 0.01 : 0); audio.play().catch(() => {}); update(); }
+  else choose(i, true, at);
+}
+
+function renderList() {
+  $("list").innerHTML = "";
+  [["On X", s => !s.audio.includes("-yt-")], ["On YouTube", s => s.audio.includes("-yt-")]].forEach(([name, belongs]) => {
+    const mine = shows.map((s, i) => i).filter(i => belongs(shows[i]));
+    if (!mine.length) return;
+    const col = document.createElement("div"), box = document.createElement("div");
+    col.innerHTML = "<h3></h3>";
+    col.querySelector("h3").textContent = name;
+    box.className = "scroll";
+    mine.forEach(i => {
+      const s = shows[i], [label, when] = showName(s.title);
+      const head = row((i === current ? "current" : "") + (i === opened ? " open" : ""), label,
+                       [shortWhen(when, true), clock(s.duration)].filter(Boolean).join(" · "), async () => {
+        opened = opened === i ? -1 : i;
+        try { await full(i); } catch (e) { return message("Couldn't load that show. Try again in a minute."); }
+        renderList();
+      });
+      head.insertAdjacentHTML("beforeend", '<span class="v">' + (i === opened ? "▴" : "▾") + "</span>");
+      box.appendChild(head);
+      if (i === opened && s.stories) {
+        box.appendChild(row("story", "▶  Play from the start", clock(s.duration), () => play(i, 0)));
+        s.stories.filter(st => st.n).forEach((st, k) => box.appendChild(
+          row("story" + (i === current && st === story ? " playing" : ""), (k + 1) + ". " + st.headline, clock(st.end - st.start), () => play(i, st.start))));
+      }
+    });
+    col.appendChild(box);
+    $("list").appendChild(col);
+  });
+  // Keep the open show (or the one playing) in view.
+  document.querySelectorAll("#list .row.open, #list .row.current").forEach(r => {
+    const box = r.parentElement; box.scrollTop = Math.max(0, r.offsetTop - box.offsetTop - 2);
+  });
+}
+
+function renderStories() {}  // the stories are in each show's pull-down now
+
+function openMenu(id) {
+  const menu = $(id), wasOpen = menu.classList.contains("open");
+  closeMenus();
+  if (wasOpen) return;
+  opened = current;
+  menu.querySelector(".panel").style.bottom = ($("bar").offsetHeight + 10) + "px";
+  menu.classList.add("open");
+  renderList();
+}
+function closeMenus() { document.querySelectorAll(".drawer").forEach(d => d.classList.remove("open")); }
+
+function shortTitle(title) { return title.replace(/^Part \d+: /, "").replace(/, \d{4}/, ""); }
+
+async function choose(i, play, at) {
+  try { await full(i); } catch (e) { return message("Couldn't load that show. Try again in a minute."); }
+  current = i;
+  const s = shows[i];
+  $("showTitle").textContent = shortTitle(s.title);
+  // Public page: "Read along" opens this show's Read-Along page (YouTube shows have none: the list of shows).
+  const read = $("readAlong");
+  if (read) read.href = s.readUrl || read.dataset.home || (read.dataset.home = read.href);
+  audio.src = s.audioUrl || "media/" + encodeURIComponent(s.audio);
+  story = null; slideKey = "";
+  const saved = parseFloat(recall("pos:" + s.id));
+  audio.addEventListener("loadedmetadata", () => {
+    if (current !== i) return;  // another show was chosen before this one loaded
+    if (at !== undefined) audio.currentTime = at + (at ? 0.01 : 0);
+    else if (saved > 5 && saved < (audio.duration || s.duration) - 15) audio.currentTime = saved;
+    drawTicks(); update();
+  }, { once: true });
+  renderList(); update();
+  if (play) audio.play().catch(() => {});
+}
+
+function drawTicks() {
+  $("track").querySelectorAll(".tick").forEach(t => t.remove());
+  const s = shows[current], total = audio.duration || s.duration;
+  s.stories.forEach(st => {
+    if (!st.n) return;
+    const t = document.createElement("div");
+    t.className = "tick"; t.style.left = (100 * st.start / total) + "%";
+    $("track").appendChild(t);
+  });
+}
+
+function storyAt(t) {
+  const list = shows[current].stories;
+  let found = list[0];
+  for (const st of list) if (st.start <= t + 0.05) found = st;
+  return found;
+}
+
+function slideFor(st, t) {
+  const list = st.slides.filter(sl => !broken.has(slideId(sl)));
+  if (!list.length) return null;
+  if (list[0].at !== undefined) {  // pictures with exact times (YouTube stills): the latest one shown so far
+    let pick = list[0];
+    for (const sl of list) { if (sl.at <= t) pick = sl; else break; }
+    return pick;
+  }
+  const span = Math.max(1, st.end - st.start);
+  const per = Math.max(MIN_SLIDE, span / list.length);
+  return list[Math.floor(Math.max(0, t - st.start) / per) % list.length];
+}
+
+function mediaUrl(sl) { return sl.url || "media/" + sl.src.split("/").map(encodeURIComponent).join("/"); }
+
+function credibilityTag(c) {
+  const k = (c || "").toLowerCase();
+  return k.includes("disputed") ? "disputed" : k.includes("divided") ? "divided" : k.includes("single") ? "single" : k.includes("confirmed") ? "confirmed" : "";
+}
+
+function showSlide(st, slide) {
+  const key = st.n + "|" + (slide ? slideId(slide) : "card");
+  if (key === slideKey) return;
+  slideKey = key;
+  if (!slide) {
+    $("card").querySelector(".seg").textContent = st.segment || TAGLINE;
+    $("card").querySelector(".head").textContent = st.n ? st.headline : shortTitle(st.headline);
+    $("card").classList.add("on"); front.classList.remove("on");
+    $("caption").hidden = true;  // the card already shows the headline
+    return;
+  }
+  const src = mediaUrl(slide);
+  const img = back.querySelector("img");
+  img.onload = () => {
+    back.querySelector(".blur").style.backgroundImage = 'url("' + src + '")';
+    back.classList.add("on"); front.classList.remove("on"); $("card").classList.remove("on");
+    [front, back] = [back, front];
+    $("credit").textContent = !slide.credit ? "" : slide.site ? "From " + slide.credit + " on " + slide.site
+                                                             : "Photo: " + slide.credit + " on X";
+    $("caption").hidden = false;
+  };
+  img.onerror = () => {  // skip it from now on
+    broken.add(slideId(slide)); slideKey = "";
+    if (slide === shows[current].cover) shows[current].cover = null;
+    story = null; update();
+  };
+  img.src = src;
+}
+
+function preload(st, t) {  // fetch the next couple of photos before they're needed
+  const s = shows[current], i = s.stories.indexOf(st);
+  [slideFor(st, t + MIN_SLIDE * 1.5), (s.stories[i + 1] || {}).slides?.[0]].forEach(sl => {
+    if (sl && !preloaded.has(slideId(sl))) { preloaded.add(slideId(sl)); new Image().src = mediaUrl(sl); }
+  });
+}
+
+function update() {
+  if (current < 0) return;
+  const s = shows[current], t = audio.currentTime || 0, total = audio.duration || s.duration;
+  const st = storyAt(t);
+  if (st !== story) {
+    story = st;
+    // The opening: a neutral photo and what this is, ahead of the first story (the cover comes from carpage.py).
+    $("seg").textContent = st.n ? st.segment : s.cover ? TAGLINE : "";
+    $("head").textContent = st.n ? st.headline : s.cover ? s.cover.headline : s.title;
+    const tag = credibilityTag(st.credibility);
+    $("tag").hidden = !tag || !st.n; $("tag").className = "tag " + tag; $("tag").textContent = st.credibility;
+    const n = s.stories.filter(x => x.n).indexOf(st) + 1;
+    $("storyLabel").textContent = st.n ? "Story " + n + " of " + (s.stories.length - (s.stories[0].n ? 0 : 1)) : "Opening";
+    if ("mediaSession" in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({ title: st.n ? st.headline : s.title, artist: "XRadio", album: s.title });
+    }
+    if ($("stories").classList.contains("open")) renderStories();
+  }
+  showSlide(st, slideFor(st, t) || (st.n ? null : s.cover) || null);
+  preload(st, t);
+  $("fill").style.width = (100 * t / total) + "%";
+  $("clock").textContent = clock(t) + " / " + clock(total);
+}
+
+function jump(dir) {
+  const list = shows[current].stories, t = audio.currentTime;
+  const i = list.indexOf(storyAt(t));
+  // "Previous" restarts the current story unless it only just began.
+  const target = dir < 0 ? (t - list[i].start > 4 ? list[i] : list[Math.max(0, i - 1)]) : list[i + 1];
+  if (target) audio.currentTime = target.start + 0.01;
+  else if (dir > 0 && current + 1 < shows.length) choose(current + 1, !audio.paused);
+  update();
+}
+
+function setPlaying(on) {
+  $("playIcon").setAttribute("d", on ? "M6 5h4v14H6zM14 5h4v14h-4z" : "M8 5v14l11-7z");
+  $("play").setAttribute("aria-label", on ? "Pause" : "Play");
+}
+
+$("play").onclick = () => { closeMenus(); audio.paused ? audio.play().catch(() => {}) : audio.pause(); };
+$("prev").onclick = () => jump(-1);
+$("next").onclick = () => jump(1);
+$("showsBtn").onclick = () => openMenu("drawer");
+document.querySelectorAll(".drawer").forEach(d => {
+  d.onclick = e => { if (e.target === d || e.target.classList.contains("close")) d.classList.remove("open"); };
+});
+
+// Full screen hides the browser's address bar. The Tesla browser has no button of its own for this.
+const root = document.documentElement;
+const fullElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+function noFullScreen() {
+  message("This browser won't go full screen.");
+  setTimeout(() => message(""), 4000);
+}
+$("fullBtn").onclick = async () => {
+  if (fullElement()) return (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  const request = root.requestFullscreen || root.webkitRequestFullscreen;
+  if (!request) return noFullScreen();
+  // Some browsers neither switch nor refuse, so say so if nothing happened after 2 s
+  setTimeout(() => { if (!fullElement()) noFullScreen(); }, 2000);
+  try { await request.call(root); } catch (e) {}
+};
+function fullChanged() {
+  const on = !!fullElement();
+  $("fullIcon").setAttribute("d", on
+    ? "M8 4h2v6H4V8h4zM14 4h2v4h4v2h-6zM4 14h6v6H8v-4H4zM14 14h6v2h-4v4h-2z"
+    : "M4 4h6v2H6v4H4zM14 4h6v6h-2V6h-4zM4 14h2v4h4v2H4zM18 14h2v6h-6v-2h4z");
+  $("fullBtn").setAttribute("aria-label", on ? "Exit full screen" : "Full screen");
+}
+document.addEventListener("fullscreenchange", fullChanged);
+document.addEventListener("webkitfullscreenchange", fullChanged);
+$("track").onclick = e => {
+  const r = $("track").getBoundingClientRect(), total = audio.duration || shows[current].duration;
+  audio.currentTime = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * total; update();
+};
+audio.addEventListener("play", () => setPlaying(true));
+audio.addEventListener("pause", () => setPlaying(false));
+audio.addEventListener("timeupdate", update);
+audio.addEventListener("ended", () => {
+  const s = shows[current]; store("pos:" + s.id);
+  const next = shows[current + 1];
+  // Each part runs straight into the next part of the same edition.
+  if (next && next.edition === s.edition) choose(current + 1, true);
+});
+setInterval(() => { if (current >= 0 && !audio.paused) store("pos:" + shows[current].id, String(audio.currentTime)); }, 5000);
+if ("mediaSession" in navigator) {
+  navigator.mediaSession.setActionHandler("play", () => audio.play());
+  navigator.mediaSession.setActionHandler("pause", () => audio.pause());
+  navigator.mediaSession.setActionHandler("nexttrack", () => jump(1));
+  navigator.mediaSession.setActionHandler("previoustrack", () => jump(-1));
+}
+load();
+</script>
+<script data-goatcounter="https://jpgapps.goatcounter.com/count" async src="https://gc.zgo.at/count.js"></script>
+</body>
+</html>
